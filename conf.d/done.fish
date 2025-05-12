@@ -26,6 +26,48 @@ end
 
 set -g __done_version 1.19.3
 
+# ───────────────────────────────────────────────────────────────
+#  Native notifications (OSC 777 / OSC 9)
+# ───────────────────────────────────────────────────────────────
+# Ghostty (and kitty, wezterm, foot, iTerm2, …) can show a desktop
+# notification if the application writes either
+#     OSC 777 ; notify ; <title> ; <body> ST   ← Ghostty/kitty
+# or  OSC 9   ; <body>                       ST   ← iTerm, wezterm, foot
+# See Ghostty option `desktop-notifications = true` :contentReference[oaicite:0]{index=0}
+#
+# We emit OSC 777 for Ghostty/kitty, OSC 9 for the others, **unless**:
+#   • we are inside tmux/screen (those multiplexers swallow OSC), or
+#   • the user has set a custom __done_notification_command.
+
+function __done_send_osc_notify -a title -a body
+    # Skip if a multiplexer is in the way
+    if test -n "$TMUX" -o -n "$STY"
+        return 1
+    end
+
+    # Ghostty sets at least one of these:
+    #   GHOSTTY_VERSION         (documented)
+    #   TERM_PROGRAM=ghostty    (convention used by many terminals)
+    if set -q GHOSTTY_VERSION; or test "$TERM_PROGRAM" = "ghostty"
+        printf "\e]777;notify;%s;%s\a" "$title" "$body"
+        return 0
+
+    # Kitty advertises itself via KITTY_WINDOW_ID (already used elsewhere)
+    else if set -q KITTY_WINDOW_ID
+        printf "\e]777;notify;%s;%s\a" "$title" "$body"
+        return 0
+
+    # WezTerm, foot, iTerm2 implement OSC 9
+    else if test "$TERM_PROGRAM" = "WezTerm" -o \
+            "$TERM_PROGRAM" = "iTerm.app" -o \
+            "$TERM" = "foot"
+        printf "\e]9;%s\a" "$body"
+        return 0
+    end
+
+    return 1  # Not supported ─ fall back to existing logic
+end
+
 function __done_run_powershell_script
     set -l powershell_exe (command --search "powershell.exe")
 
@@ -247,7 +289,10 @@ if set -q __done_enabled
                 set message (tmux lsw  -F"$__done_tmux_pane_format" -f '#{==:#{pane_id},'$TMUX_PANE'}')" $message"
             end
 
-            if set -q __done_notification_command
+            if __done_send_osc_notify "$title" "$message"
+                # Native path succeeded – nothing more to do
+
+            else if set -q __done_notification_command
                 eval $__done_notification_command
                 if test "$__done_notify_sound" -eq 1
                     echo -e "\a" # bell sound
